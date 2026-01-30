@@ -1,154 +1,102 @@
 import streamlit as st
+import random
 import time
 
-# --- CONFIGURATION ---
-st.set_page_config(page_title="RPS Lobby", page_icon="🎮")
-
-# --- SHARED STATE MANAGEMENT ---
-class GameStore:
-    def __init__(self):
-        self.rooms = {}
-
-    def get_active_rooms(self):
-        # Returns a list of rooms that aren't full yet
-        return [rid for rid, data in self.rooms.items() if data["p2"] is None]
-
-    def create_room(self, room_id, player_name):
-        if room_id in self.rooms:
-            return False
-        self.rooms[room_id] = {
-            "p1": player_name, 
-            "p2": None, 
-            "p1_move": None, 
-            "p2_move": None,
-            "status": "waiting"
-        }
-        return True
-
-    def join_room(self, room_id, player_name):
-        room = self.rooms.get(room_id)
-        if room and room["p2"] is None and room["p1"] != player_name:
-            room["p2"] = player_name
-            room["status"] = "playing"
-            return True
-        return False
-
-    def make_move(self, room_id, role, move):
-        if room_id in self.rooms:
-            self.rooms[room_id][f"{role}_move"] = move
-
-    def reset_game(self, room_id):
-        if room_id in self.rooms:
-            self.rooms[room_id]["p1_move"] = None
-            self.rooms[room_id]["p2_move"] = None
-
+# 1. SETUP SHARED STATE (This connects all players)
 @st.cache_resource
-def get_store():
-    return GameStore()
+def get_global_state():
+    return {
+        "players": {}, # {session_id: {"name": str, "balance": int, "bet": {}}}
+        "history": [],
+        "last_result": None,
+        "is_spinning": False,
+        "timer": 30 # Countdown for the next spin
+    }
 
-store = get_store()
+state = get_global_state()
 
-# --- UI LOGIC ---
-st.title("✂️ RPS Multiplayer Lobby")
+# 2. ROULETTE LOGIC
+ROULETTE_NUMBERS = {
+    i: "red" if i in [1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36] 
+    else "black" if i != 0 else "green" 
+    for i in range(37)
+}
 
-if "role" not in st.session_state:
-    st.subheader("Join the Arena")
-    name = st.text_input("Enter your nickname", placeholder="e.g. Player1")
+def resolve_bets(winning_number):
+    win_color = ROULETTE_NUMBERS[winning_number]
+    for p_id, p_data in state["players"].items():
+        bet = p_data.get("bet")
+        if not bet: continue
+        
+        amt = bet["amount"]
+        choice = bet["choice"]
+        
+        # Payout logic
+        win = False
+        if choice == str(winning_number):
+            p_data["balance"] += amt * 35
+            win = True
+        elif choice in ["red", "black"] and choice == win_color:
+            p_data["balance"] += amt * 2
+            win = True
+        
+        if not win:
+            p_data["balance"] -= amt
+        
+        p_data["bet"] = None # Reset bet for next round
+
+# 3. UI LAYOUT
+st.title("🎰 Live Multiplayer Roulette")
+
+# Player Registration
+if "my_id" not in st.session_state:
+    st.session_state.my_id = str(random.randint(1000, 9999))
+
+name = st.text_input("Enter your name to join:", key="name_input")
+if name and st.session_state.my_id not in state["players"]:
+    state["players"][st.session_state.my_id] = {"name": name, "balance": 1000, "bet": None}
+
+# Game Info
+if st.session_state.my_id in state["players"]:
+    p = state["players"][st.session_state.my_id]
+    st.sidebar.metric("Your Balance", f"${p['balance']}")
     
-    if name:
-        tab1, tab2 = st.tabs(["Join Existing Room", "Create New Room"])
-        
-        with tab1:
-            rooms = store.get_active_rooms()
-            if not rooms:
-                st.info("No active rooms found. Why not create one?")
-                if st.button("🔄 Refresh Lobby"):
-                    st.rerun()
-            else:
-                for rid in rooms:
-                    col_room, col_btn = st.columns([3, 1])
-                    col_room.write(f"🏠 **{rid}** (Waiting for opponent...)")
-                    if col_btn.button(f"Join", key=f"join_{rid}"):
-                        if store.join_room(rid, name):
-                            st.session_state.role = "p2"
-                            st.session_state.name = name
-                            st.session_state.room_id = rid
-                            st.rerun()
-                        else:
-                            st.error("Could not join room.")
+    # Betting Controls
+    st.subheader("Place Your Bet")
+    col1, col2 = st.columns(2)
+    with col1:
+        bet_amt = st.number_input("Amount", 10, p["balance"], step=10)
+    with col2:
+        bet_choice = st.selectbox("Bet On", ["red", "black"] + [str(i) for i in range(37)])
+    
+    if st.button("Place Bet"):
+        state["players"][st.session_state.my_id]["bet"] = {"amount": bet_amt, "choice": bet_choice}
+        st.success(f"Bet placed on {bet_choice}!")
 
-        with tab2:
-            new_room_name = st.text_input("New Room Name", placeholder="e.g. TheDojo")
-            if st.button("Create & Join"):
-                if new_room_name:
-                    if store.create_room(new_room_name, name):
-                        st.session_state.role = "p1"
-                        st.session_state.name = name
-                        st.session_state.room_id = new_room_name
-                        st.rerun()
-                    else:
-                        st.error("Room name already exists!")
-                else:
-                    st.warning("Please enter a room name.")
+# Live Table Status
+st.divider()
+st.write("### 👥 Players in Room")
+for p_id, p_data in state["players"].items():
+    status = "✅ Bet Placed" if p_data["bet"] else "⏳ Thinking..."
+    st.write(f"**{p_data['name']}**: {status}")
 
-# --- GAME INTERFACE ---
-else:
-    room_id = st.session_state.room_id
-    role = st.session_state.role
-    room_data = store.rooms.get(room_id)
+# The "Live" Spinner (Simplified)
+if st.button("🌀 DEBUG: Spin Wheel (Manual)"):
+    with st.spinner("Wheel is spinning..."):
+        time.sleep(2)
+        res = random.randint(0, 36)
+        state["last_result"] = res
+        resolve_bets(res)
+        state["history"].insert(0, f"{res} ({ROULETTE_NUMBERS[res]})")
 
-    if not room_data:
-        st.error("Room no longer exists.")
-        if st.button("Back to Lobby"):
-            del st.session_state.role
-            st.rerun()
-    else:
-        st.write(f"📍 Room: **{room_id}** | Player: **{st.session_state.name}**")
-        
-        if room_data["p2"] is None:
-            st.warning("Waiting for an opponent to join...")
-            time.sleep(2)
-            st.rerun()
-        
-        else:
-            opponent = room_data["p2"] if role == "p1" else room_data["p1"]
-            st.success(f"Battle: **{st.session_state.name} vs {opponent}**")
+if state["last_result"] is not None:
+    color = "green" if state["last_result"] == 0 else ROULETTE_NUMBERS[state["last_result"]]
+    st.header(f"Last Result: :{color}[{state['last_result']}]")
 
-            my_move = room_data[f"{role}_move"]
-            opp_move = room_data["p2_move" if role == "p1" else "p1_move"]
+st.write("### 📜 History")
+st.write(", ".join(state["history"][:10]))
 
-            if my_move is None:
-                st.subheader("Pick your weapon:")
-                c1, c2, c3 = st.columns(3)
-                if c1.button("🪨 Rock"): store.make_move(room_id, role, "Rock"); st.rerun()
-                if c2.button("📄 Paper"): store.make_move(room_id, role, "Paper"); st.rerun()
-                if c3.button("✂️ Scissors"): store.make_move(room_id, role, "Scissors"); st.rerun()
-
-            elif opp_move is None:
-                st.info(f"You played **{my_move}**. Waiting for {opponent}...")
-                time.sleep(2)
-                st.rerun()
-
-            else:
-                st.markdown("---")
-                st.write(f"You: **{my_move}** | {opponent}: **{opp_move}**")
-                
-                # Winner Logic
-                if my_move == opp_move:
-                    st.info("It's a Draw!")
-                elif (my_move == "Rock" and opp_move == "Scissors") or \
-                     (my_move == "Paper" and opp_move == "Rock") or \
-                     (my_move == "Scissors" and opp_move == "Paper"):
-                    st.success("You Won!")
-                    st.balloons()
-                else:
-                    st.error("You Lost!")
-
-                if st.button("Next Round"):
-                    store.reset_game(room_id)
-                    st.rerun()
-                
-                if st.button("Exit to Lobby"):
-                    # Basic cleanup (in a real app you'd remove the player from the room)
-                    del st.session_state.role
-                    st.rerun()
+# Auto-refresh helper
+st.empty()
+time.sleep(2)
+st.rerun()
