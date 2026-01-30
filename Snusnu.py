@@ -105,4 +105,43 @@ def draw_board():
             num = rows[r][c]
             color = "red" if num in RED_NUMS else "black"
             # FIXED MULTILINE STRING BELOW
-            style = f"background-color:{color}; color:white; text-align:center;
+            style = f"background-color:{color}; color:white; text-align:center; border:1px solid white; border-radius:3px; padding:5px; margin-bottom:2px;"
+            cols[c].markdown(f"<div style='{style}'>{num}</div>", unsafe_allow_html=True)
+
+draw_board()
+
+# 4. BETTING AREA
+if st.session_state.my_id in state["players"]:
+    p = state["players"][st.session_state.my_id]
+    c1, c2, c3 = st.columns([1, 1, 1])
+    with c1:
+        amt = st.number_input("Amount", 10, p["balance"], step=50)
+    with c2:
+        choice = st.selectbox("Position", ["red", "black"] + [str(i) for i in range(37)])
+    with c3:
+        st.write("###")
+        if st.button("Place Bet", use_container_width=True):
+            state["players"][st.session_state.my_id]["bet"] = {"amount": amt, "choice": choice}
+
+# 5. LIVE FEEDS
+st.divider()
+col_a, col_b = st.columns(2)
+with col_a:
+    st.write("### 👥 Active Bets")
+    for pid, pdata in state["players"].items():
+        status = f"✅ ${pdata['bet']['amount']} on {pdata['bet']['choice']}" if pdata["bet"] else "⏳ Waiting..."
+        st.write(f"**{pdata['name']}**: {status}")
+
+with col_b:
+    if state["last_result"] is not None:
+        st.markdown(f"""
+            <div style="text-align:center; padding:10px; border: 4px solid gold; border-radius:10px;">
+                <p>LAST RESULT</p>
+                <h1 style="color:{state['winning_color']};">{state['last_result']}</h1>
+            </div>
+        """, unsafe_allow_html=True)
+    st.write(f"**History:** {', '.join(state['history'][:8])}")
+
+# 6. AUTO-REFRESH (Keep players synced)
+time.sleep(2)
+st.rerun()
