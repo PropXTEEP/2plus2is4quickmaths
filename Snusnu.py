@@ -2,101 +2,97 @@ import streamlit as st
 import random
 import time
 
-# 1. SETUP SHARED STATE (This connects all players)
+# --- SHARED STATE SETUP ---
 @st.cache_resource
 def get_global_state():
     return {
-        "players": {}, # {session_id: {"name": str, "balance": int, "bet": {}}}
+        "players": {}, 
         "history": [],
         "last_result": None,
         "is_spinning": False,
-        "timer": 30 # Countdown for the next spin
+        "winning_color": "white"
     }
 
 state = get_global_state()
 
-# 2. ROULETTE LOGIC
-ROULETTE_NUMBERS = {
-    i: "red" if i in [1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36] 
-    else "black" if i != 0 else "green" 
+# --- ROULETTE CONSTANTS ---
+RED_NUMS = [1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36]
+ROULETTE_DATA = {
+    i: "red" if i in RED_NUMS else "black" if i != 0 else "green" 
     for i in range(37)
 }
 
+# --- LOGIC FUNCTIONS ---
 def resolve_bets(winning_number):
-    win_color = ROULETTE_NUMBERS[winning_number]
+    win_color = ROULETTE_DATA[winning_number]
     for p_id, p_data in state["players"].items():
-        bet = p_data.get("bet")
-        if not bet: continue
+        if not p_data["bet"]: continue
         
-        amt = bet["amount"]
-        choice = bet["choice"]
+        amt = p_data["bet"]["amount"]
+        choice = p_data["bet"]["choice"]
         
-        # Payout logic
-        win = False
+        # Win Calculation
+        is_win = False
         if choice == str(winning_number):
             p_data["balance"] += amt * 35
-            win = True
-        elif choice in ["red", "black"] and choice == win_color:
-            p_data["balance"] += amt * 2
-            win = True
-        
-        if not win:
+            is_win = True
+        elif choice == win_color:
+            p_data["balance"] += amt # Return bet + profit
+            is_win = True
+        else:
             p_data["balance"] -= amt
-        
-        p_data["bet"] = None # Reset bet for next round
 
-# 3. UI LAYOUT
+        # Handle Bankruptcy
+        if p_data["balance"] <= 0:
+            p_data["balance"] = 1000
+            p_data["notif"] = "🏦 Bankrupt! The house gave you a $1,000 loan."
+        elif is_win:
+            p_data["notif"] = f"💰 You won with {choice}!"
+        else:
+            p_data["notif"] = f"💸 Lost ${amt} on {choice}."
+            
+        p_data["bet"] = None
+
+# --- UI COMPONENTS ---
+st.set_page_config(page_title="Streamlit Casino", layout="wide")
 st.title("🎰 Live Multiplayer Roulette")
 
-# Player Registration
+# Session Management
 if "my_id" not in st.session_state:
     st.session_state.my_id = str(random.randint(1000, 9999))
 
-name = st.text_input("Enter your name to join:", key="name_input")
-if name and st.session_state.my_id not in state["players"]:
-    state["players"][st.session_state.my_id] = {"name": name, "balance": 1000, "bet": None}
-
-# Game Info
-if st.session_state.my_id in state["players"]:
-    p = state["players"][st.session_state.my_id]
-    st.sidebar.metric("Your Balance", f"${p['balance']}")
+# 1. SIDEBAR: Player Info
+with st.sidebar:
+    st.header("👤 Player Profile")
+    if st.session_state.my_id not in state["players"]:
+        name = st.text_input("Username")
+        if st.button("Join Game"):
+            state["players"][st.session_state.my_id] = {"name": name, "balance": 1000, "bet": None, "notif": ""}
     
-    # Betting Controls
-    st.subheader("Place Your Bet")
-    col1, col2 = st.columns(2)
-    with col1:
-        bet_amt = st.number_input("Amount", 10, p["balance"], step=10)
-    with col2:
-        bet_choice = st.selectbox("Bet On", ["red", "black"] + [str(i) for i in range(37)])
+    if st.session_state.my_id in state["players"]:
+        p = state["players"][st.session_state.my_id]
+        st.metric("Your Balance", f"${p['balance']:,}")
+        if p["notif"]:
+            st.info(p["notif"])
+            p["notif"] = "" # Clear after showing
+
+# 2. MAIN: The Visual Board
+st.subheader("The Table")
+
+def draw_board():
+    # Creating a simple CSS-styled grid for the board
+    rows = [
+        [3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36],
+        [2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35],
+        [1, 4, 7, 10, 13, 16, 19, 22, 25, 28, 31, 34]
+    ]
     
-    if st.button("Place Bet"):
-        state["players"][st.session_state.my_id]["bet"] = {"amount": bet_amt, "choice": bet_choice}
-        st.success(f"Bet placed on {bet_choice}!")
-
-# Live Table Status
-st.divider()
-st.write("### 👥 Players in Room")
-for p_id, p_data in state["players"].items():
-    status = "✅ Bet Placed" if p_data["bet"] else "⏳ Thinking..."
-    st.write(f"**{p_data['name']}**: {status}")
-
-# The "Live" Spinner (Simplified)
-if st.button("🌀 DEBUG: Spin Wheel (Manual)"):
-    with st.spinner("Wheel is spinning..."):
-        time.sleep(2)
-        res = random.randint(0, 36)
-        state["last_result"] = res
-        resolve_bets(res)
-        state["history"].insert(0, f"{res} ({ROULETTE_NUMBERS[res]})")
-
-if state["last_result"] is not None:
-    color = "green" if state["last_result"] == 0 else ROULETTE_NUMBERS[state["last_result"]]
-    st.header(f"Last Result: :{color}[{state['last_result']}]")
-
-st.write("### 📜 History")
-st.write(", ".join(state["history"][:10]))
-
-# Auto-refresh helper
-st.empty()
-time.sleep(2)
-st.rerun()
+    # Render Zero
+    st.markdown(f"<div style='background-color:green; color:white; text-align:center; border-radius:5px; padding:10px; margin-bottom:5px'>0 (Green)</div>", unsafe_allow_html=True)
+    
+    cols = st.columns(12)
+    for r in range(3):
+        for c in range(12):
+            num = rows[r][c]
+            color = "red" if num in RED_NUMS else "black"
+            cols[c].markdown(f"<div style='background-color:{color}; color:white; text-align:center; border:1px solid white; border-radius:3
