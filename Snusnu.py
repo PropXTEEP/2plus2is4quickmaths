@@ -1,79 +1,148 @@
 import streamlit as st
-import yfinance as yf
-import pandas as pd
-import plotly.graph_objs as go
 import time
-from datetime import datetime
 
-# 1. Page Configuration
-st.set_page_config(
-    page_title="LBRT Stock Watcher",
-    page_icon="📈",
-    layout="wide"
-)
+# --- CONFIGURATION ---
+st.set_page_config(page_title="Multiplayer RPS", page_icon="✂️")
 
-# 2. Sidebar Controls
-st.sidebar.header("Settings")
-refresh_rate = st.sidebar.slider("Refresh Interval (seconds)", 5, 60, 30)
-stop_button = st.sidebar.button("Stop Watching")
+# --- SHARED STATE MANAGEMENT ---
+# This class lives in the server's memory and is shared across ALL users
+class GameStore:
+    def __init__(self):
+        self.rooms = {}
 
-# 3. Functions
-def get_lbrt_data():
-    """Fetches the latest minute-level data for LBRT"""
-    ticker = "LBRT"
-    # Get 1 day of data with 1-minute intervals to see intraday movement
-    data = yf.download(ticker, period="1d", interval="1m", progress=False)
+    def create_or_join(self, room_id, player_name):
+        if room_id not in self.rooms:
+            self.rooms[room_id] = {
+                "p1": player_name, 
+                "p2": None, 
+                "p1_move": None, 
+                "p2_move": None,
+                "status": "waiting"
+            }
+            return "p1"
+        else:
+            room = self.rooms[room_id]
+            if room["p2"] is None and room["p1"] != player_name:
+                room["p2"] = player_name
+                room["status"] = "playing"
+                return "p2"
+            elif room["p1"] == player_name:
+                return "p1"
+            elif room["p2"] == player_name:
+                return "p2"
+            else:
+                return "full"
+
+    def make_move(self, room_id, role, move):
+        if room_id in self.rooms:
+            self.rooms[room_id][f"{role}_move"] = move
+
+    def get_room_state(self, room_id):
+        return self.rooms.get(room_id, None)
+
+    def reset_game(self, room_id):
+        if room_id in self.rooms:
+            self.rooms[room_id]["p1_move"] = None
+            self.rooms[room_id]["p2_move"] = None
+
+# Initialize the global shared state
+@st.cache_resource
+def get_store():
+    return GameStore()
+
+store = get_store()
+
+# --- UI LOGIC ---
+st.title("✂️ Rock Paper Scissors: Multiplayer")
+
+# Step 1: Login / Room Selection
+if "role" not in st.session_state:
+    st.write("Enter a Room Name to join your friend.")
+    c1, c2 = st.columns(2)
+    name = c1.text_input("Your Name")
+    room_id = c2.text_input("Room Name (e.g., 'Battle1')")
     
-    # yfinance sometimes returns a multi-level index, we flatten it if needed
-    if isinstance(data.columns, pd.MultiIndex):
-        data.columns = data.columns.get_level_values(0)
+    if st.button("Join Game"):
+        if name and room_id:
+            role = store.create_or_join(room_id, name)
+            if role == "full":
+                st.error("Room is full!")
+            else:
+                st.session_state.role = role
+                st.session_state.name = name
+                st.session_state.room_id = room_id
+                st.rerun()
+
+# Step 2: The Game Interface
+else:
+    room_id = st.session_state.room_id
+    role = st.session_state.role
+    room_data = store.get_room_state(room_id)
+
+    # Header
+    st.write(f"Logged in as: **{st.session_state.name}** in Room: **{room_id}**")
     
-    return data
-
-def plot_chart(df):
-    """Creates a simple interactive candle/line chart"""
-    fig = go.Figure()
+    # Check if opponent is here
+    if room_data["p2"] is None:
+        st.warning("Waiting for an opponent to join this room name...")
+        time.sleep(2) # Auto-refresh to check for opponent
+        st.rerun()
     
-    # Add the close price line
-    fig.add_trace(go.Scatter(
-        x=df.index, 
-        y=df['Close'], 
-        mode='lines', 
-        name='Price',
-        line=dict(color='#00CC96', width=2)
-    ))
+    else:
+        # Determine Opponent Name
+        opponent = room_data["p2"] if role == "p1" else room_data["p1"]
+        st.success(f"Playing against: **{opponent}**")
 
-    fig.update_layout(
-        title="LBRT Intraday Price (1-Minute Intervals)",
-        xaxis_title="Time",
-        yaxis_title="Price (USD)",
-        height=400,
-        margin=dict(l=0, r=0, t=40, b=0)
-    )
-    return fig
+        # Logic: Has everyone moved?
+        my_move = room_data[f"{role}_move"]
+        opp_move = room_data[f"p2_move" if role == "p1" else "p1_move"]
 
-# 4. Main App Layout
-st.title("🦅 LBRT Real-Time Watcher")
+        # 2a. Input Phase
+        if my_move is None:
+            st.subheader("Make your move!")
+            col1, col2, col3 = st.columns(3)
+            if col1.button("🪨 Rock", use_container_width=True):
+                store.make_move(room_id, role, "Rock")
+                st.rerun()
+            if col2.button("📄 Paper", use_container_width=True):
+                store.make_move(room_id, role, "Paper")
+                st.rerun()
+            if col3.button("✂️ Scissors", use_container_width=True):
+                store.make_move(room_id, role, "Scissors")
+                st.rerun()
 
-# We use a placeholder container so we can update just this area
-placeholder = st.empty()
+        # 2b. Waiting Phase (I moved, opponent hasn't)
+        elif my_move is not None and opp_move is None:
+            st.info(f"You chose **{my_move}**. Waiting for {opponent}...")
+            time.sleep(2) # Auto-refresh
+            st.rerun()
 
-# 5. The "Watch" Loop
-# This loop will run indefinitely until "Stop Watching" is clicked
-if not stop_button:
-    while True:
-        with placeholder.container():
-            # A. Fetch Data
-            df = get_lbrt_data()
+        # 2c. Result Phase (Both moved)
+        elif my_move is not None and opp_move is not None:
+            st.markdown("---")
+            c1, c2 = st.columns(2)
+            c1.metric("You", my_move)
+            c2.metric(opponent, opp_move)
             
-            if not df.empty:
-                latest_price = df['Close'].iloc[-1]
-                start_price = df['Open'].iloc[0]
-                price_change = latest_price - start_price
-                pct_change = (price_change / start_price) * 100
-                current_time = datetime.now().strftime("%H:%M:%S")
+            # Determine Winner
+            result = ""
+            if my_move == opp_move:
+                result = "It's a Tie! 🤝"
+                st.info(result)
+            elif (my_move == "Rock" and opp_move == "Scissors") or \
+                 (my_move == "Paper" and opp_move == "Rock") or \
+                 (my_move == "Scissors" and opp_move == "Paper"):
+                result = "You Win! 🎉"
+                st.balloons()
+                st.success(result)
+            else:
+                result = "You Lose! 💀"
+                st.error(result)
 
-                # B. Metrics Row
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Current Price", f"${latest_price:.2f}")
-                col2
+            if st.button("Play Again"):
+                store.reset_game(room_id)
+                st.rerun()
+            
+            # Auto-refresh so if opponent clicks "Play Again", I see it
+            time.sleep(3) 
+            st.rerun()
